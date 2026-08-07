@@ -81,7 +81,7 @@ curl http://localhost:3000/api/health
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md). Demo video script: [docs/demo-script.md](docs/demo-script.md).
+See [docs/architecture.md](docs/architecture.md).
 
 ## Monorepo layout
 
