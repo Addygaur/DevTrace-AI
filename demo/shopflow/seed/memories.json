@@ -1,0 +1,120 @@
+{
+  "project": {
+    "slug": "shopflow",
+    "name": "ShopFlow",
+    "description": "Acme Retail checkout platform — cart, payments, inventory reservation, and storefront. Production revenue path."
+  },
+  "memories": [
+    {
+      "title": "ADR-0007: Stripe as primary payment processor",
+      "body": "Decision: Use Stripe PaymentIntents as the primary payment processor for ShopFlow. PayPal remains a secondary fallback for regions where Stripe conversion is weak.\n\nContext: We evaluated Stripe, Adyen, and Braintree. Stripe won on developer experience, webhook reliability, and existing Acme Retail billing relationships.\n\nConsequences: All new payment code must go through services/payments/src/stripeAdapter.ts. Direct Stripe SDK usage in checkout is forbidden. Idempotency keys are mandatory on every charge.",
+      "memory_type": "adr",
+      "source": "adr/0007-stripe-primary.md",
+      "module_path": "services/payments",
+      "tags": ["payments", "stripe", "architecture"]
+    },
+    {
+      "title": "ADR-0012: Inventory reservation before payment auth",
+      "body": "Decision: Reserve inventory when a checkout session is created, before payment authorization. Release reservations on payment failure or session expiry (15 minutes).\n\nContext: In November 2024 we oversold limited drops because stock was only decremented after payment success. Marketing launched flash sales while checkout raced.\n\nConsequences: checkout/session.ts must call inventory.reserve(). Never complete payment without an active reservation ID.",
+      "memory_type": "adr",
+      "source": "adr/0012-inventory-reservation.md",
+      "module_path": "services/inventory",
+      "tags": ["inventory", "checkout", "architecture"]
+    },
+    {
+      "title": "INC-2141: Payment confirmation timeouts",
+      "body": "Incident: On 2025-03-12, ~18% of checkouts failed with payment confirmation timeouts during a marketing campaign.\n\nRoot cause: chargeCustomer() was called without idempotency keys under retry storms from the mobile client. Stripe created duplicate PaymentIntents; our webhook handler could not reconcile sessions.\n\nFix: Require idempotencyKey on ChargeRequest. Checkout now derives the key from checkoutSessionId + attempt number. Added alerting on pending payment intents older than 2 minutes.\n\nLesson: Retries without idempotency in payments are a production outage waiting to happen.",
+      "memory_type": "incident",
+      "source": "incidents/INC-2141.md",
+      "module_path": "services/payments/src/stripeAdapter.ts",
+      "tags": ["incident", "payments", "idempotency"]
+    },
+    {
+      "title": "Why ShopFlow exists",
+      "body": "ShopFlow is Acme Retail's unified checkout platform. It replaced three legacy checkout stacks (web monolith, iOS native, partner marketplace) so pricing, promotions, tax, and payments stay consistent.\n\nBusiness problem: fragmented checkout caused cart abandonment and incorrect promotions. ShopFlow owns cart → checkout → payment → inventory reservation for web and mobile.\n\nIf you are onboarding: start with demo/shopflow/README.md, then read ADR-0007 and ADR-0012 before changing payments or inventory.",
+      "memory_type": "onboarding",
+      "source": "docs/onboarding.md",
+      "module_path": "demo/shopflow",
+      "tags": ["onboarding", "product", "why"]
+    },
+    {
+      "title": "Checkout session lifecycle",
+      "body": "Feature: Checkout sessions move draft → awaiting_payment → paid | failed | cancelled.\n\ncreateCheckoutSession reserves inventory and creates a payment intent via the payments adapter. completeCheckout is triggered by Stripe webhooks, not by the browser redirect alone.\n\nProduction impact: this path is on the critical revenue path for all Acme Retail digital orders.",
+      "memory_type": "feature",
+      "source": "docs/checkout-lifecycle.md",
+      "module_path": "services/checkout",
+      "tags": ["checkout", "feature"]
+    },
+    {
+      "title": "Cart service ownership boundary",
+      "body": "The cart service owns mutable cart state only. It must not call Stripe or finalize orders. Checkout reads an immutable cart snapshot at session creation.\n\nRefactor note (2025-01): promotions were moved out of cart into a separate promotions engine to stop double-discount bugs.",
+      "memory_type": "refactor",
+      "source": "prs/cart-boundary.md",
+      "module_path": "services/cart",
+      "tags": ["cart", "boundaries"]
+    },
+    {
+      "title": "Guest checkout must still reserve inventory",
+      "body": "Product rule: guest users can checkout without an account, but inventory reservation rules are identical to logged-in users. Do not special-case guests in reserve().\n\nThis was clarified after support tickets where guest flash-sale purchases oversold SKUs.",
+      "memory_type": "note",
+      "source": "manual",
+      "module_path": "services/inventory",
+      "tags": ["guest-checkout", "inventory"]
+    },
+    {
+      "title": "Webhook-driven payment completion",
+      "body": "Design decision: Browser success redirects are UX only. Source of truth for paid status is the Stripe payment_intent.succeeded webhook processed by checkout.\n\nNever mark a session paid solely from client-side confirmation — fraud and double-submit risk.",
+      "memory_type": "adr",
+      "source": "adr/0015-webhook-completion.md",
+      "module_path": "services/checkout",
+      "tags": ["webhooks", "payments", "security"]
+    }
+  ],
+  "impact_links": [
+    {
+      "code_path": "services/payments/src/stripeAdapter.ts",
+      "feature_name": "Card checkout",
+      "user_segment": "All web and mobile buyers paying by card",
+      "apis": ["POST /v1/payments/charge", "Stripe PaymentIntents"],
+      "downstream": ["checkout", "order-service", "fraud-engine"],
+      "severity_if_changed": "critical",
+      "notes": "Breaking chargeCustomer() or idempotency behavior can halt revenue. See INC-2141."
+    },
+    {
+      "code_path": "services/checkout/src/session.ts",
+      "feature_name": "Checkout session",
+      "user_segment": "All purchasers completing an order",
+      "apis": ["POST /v1/checkout/sessions", "POST /v1/checkout/complete"],
+      "downstream": ["payments", "inventory", "cart", "notifications"],
+      "severity_if_changed": "critical",
+      "notes": "Owns revenue-critical lifecycle. Inventory reservation must remain before payment auth."
+    },
+    {
+      "code_path": "services/cart/src/cart.ts",
+      "feature_name": "Shopping cart",
+      "user_segment": "Browsing and pre-checkout shoppers",
+      "apis": ["GET /v1/cart", "POST /v1/cart/items"],
+      "downstream": ["checkout", "promotions"],
+      "severity_if_changed": "high",
+      "notes": "Incorrect totals propagate into checkout payment amounts."
+    },
+    {
+      "code_path": "services/inventory/src/reserve.ts",
+      "feature_name": "Stock reservation",
+      "user_segment": "Flash-sale and limited-SKU buyers",
+      "apis": ["POST /v1/inventory/reserve", "POST /v1/inventory/release"],
+      "downstream": ["checkout", "warehouse"],
+      "severity_if_changed": "high",
+      "notes": "Skipping reserve() risks oversell (ADR-0012)."
+    },
+    {
+      "code_path": "services/payments",
+      "feature_name": "Payments platform",
+      "user_segment": "All paying customers",
+      "apis": ["payments.*"],
+      "downstream": ["checkout", "finance-reporting"],
+      "severity_if_changed": "critical",
+      "notes": "Module-level blast radius for any payment adapter change."
+    }
+  ]
+}
